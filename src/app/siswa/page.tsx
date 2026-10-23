@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import AktifkanNotif from '@/components/AktifkanNotif';
 import { requireRole } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { formatTanggalID, kegiatanPadaTanggal, nowWIB } from '@/lib/jadwal';
@@ -38,6 +39,8 @@ export default async function SiswaHome() {
       ) : (
         <div className="card text-sm text-slate-600">Hari ini tidak ada kegiatan Zuhur maupun Wirid.</div>
       )}
+
+      <AktifkanNotif />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Link href="/siswa/absen" className="card flex flex-col items-center gap-2 py-8 text-center transition hover:border-brand-500 hover:shadow-md">

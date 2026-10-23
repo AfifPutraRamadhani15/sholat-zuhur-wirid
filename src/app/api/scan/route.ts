@@ -1,10 +1,11 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { z } from 'zod';
 import { apiProfile } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { verifikasiToken } from '@/lib/qr';
 import { jendelaKegiatan, kegiatanPadaTanggal, nowWIB, pesanState, stateJendela } from '@/lib/jadwal';
 import { kirimNotif } from '@/lib/chatbot';
+import { kirimKonfirmasiPush } from '@/lib/push';
 import { audit } from '@/lib/audit';
 import { boleh } from '@/lib/ratelimit';
 import { satu } from '@/lib/util';
@@ -127,6 +128,9 @@ export async function POST(req: Request) {
   } catch {
     // notifikasi gagal tidak membatalkan absensi
   }
+
+  // Notifikasi di layar HP siswa berjalan setelah respons dikirim, jadi tidak memperlambat scan
+  after(() => kirimKonfirmasiPush(sb, { siswaId: siswa.id, kegiatan, tanggal: now.tanggal, jam: jamTeks, status }));
 
   await audit(scanner.id, 'scan', `absensi:${baris.id}`, { siswa: siswa.nama, kegiatan, status, metode: v.tipe === 'c' ? 'kartu' : 'qr_layar' });
 
