@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import OtoKeluar from '@/components/OtoKeluar';
 
 export const metadata: Metadata = {
   title: 'Absensi Zuhur dan Wirid',
@@ -17,7 +18,9 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  // Biarkan properti viewport Anda yang sudah ada di sini
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: '#047857',
 };
 
 export default function RootLayout({
@@ -27,7 +30,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="id">
-      <body>{children}</body>
+      <body>
+        {children}
+        <OtoKeluar />
+      </body>
     </html>
   );
 }

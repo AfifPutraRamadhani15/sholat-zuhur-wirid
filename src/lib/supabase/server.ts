@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { opsiSesi } from './cookie';
 
 /** Klien Supabase berbasis cookie sesi pengguna (dipakai di server component dan route handler). */
 export async function supabaseServer() {
@@ -12,7 +13,7 @@ export async function supabaseServer() {
         getAll: () => store.getAll(),
         setAll: (list) => {
           try {
-            list.forEach(({ name, value, options }) => store.set(name, value, options));
+            list.forEach(({ name, value, options }) => store.set(name, value, opsiSesi(value, options)));
           } catch {
             // dipanggil dari server component: abaikan, middleware yang menyegarkan sesi
           }
