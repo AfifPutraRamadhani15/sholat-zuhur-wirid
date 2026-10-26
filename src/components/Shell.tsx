@@ -8,6 +8,7 @@ export interface NavItem {
 
 export default function Shell({
   nav = [],
+  navNode,
   nama,
   peran,
   home,
@@ -15,6 +16,8 @@ export default function Shell({
   children,
 }: {
   nav?: NavItem[];
+  /** Menu kustom (misalnya menu admin dengan penanda angka). Jika diisi, menggantikan `nav`. */
+  navNode?: React.ReactNode;
   nama: string;
   peran: string;
   home: string;
@@ -37,7 +40,10 @@ export default function Shell({
             <LogoutButton />
           </div>
         </div>
-        {nav.length > 0 && (
+        {navNode ? (
+          <div className={`mx-auto ${lebar} px-3 pb-2`}>{navNode}</div>
+        ) : (
+          nav.length > 0 && (
           <nav className={`mx-auto flex ${lebar} gap-1 overflow-x-auto px-3 pb-2`}>
             {nav.map((n) => (
               <Link
@@ -49,6 +55,7 @@ export default function Shell({
               </Link>
             ))}
           </nav>
+          )
         )}
       </header>
       <main className={`mx-auto ${lebar} px-4 py-6`}>{children}</main>
