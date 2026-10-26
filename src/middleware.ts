@@ -1,6 +1,5 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { opsiSesi } from '@/lib/supabase/cookie';
 
 /** Menyegarkan sesi login di setiap permintaan. */
 export async function middleware(request: NextRequest) {
@@ -14,12 +13,20 @@ export async function middleware(request: NextRequest) {
         setAll: (list) => {
           list.forEach(({ name, value }) => request.cookies.set(name, value));
           response = NextResponse.next({ request });
-          list.forEach(({ name, value, options }) => response.cookies.set(name, value, opsiSesi(value, options)));
+          list.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
         },
       },
     },
   );
-  await supabase.auth.getUser();
+  // Cepat: token diperiksa langsung di server dan disegarkan bila perlu. Jika gagal, pakai pemeriksaan lewat jaringan seperti sebelumnya.
+  let sah = false;
+  try {
+    const { data } = await supabase.auth.getClaims();
+    sah = !!data?.claims;
+  } catch {
+    sah = false;
+  }
+  if (!sah) await supabase.auth.getUser();
   return response;
 }
 

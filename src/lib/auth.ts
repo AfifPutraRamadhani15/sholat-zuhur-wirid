@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabaseServer } from './supabase/server';
 import { supabaseAdmin } from './supabase/admin';
 import type { Profile, Role } from './types';
@@ -9,14 +10,29 @@ export function homeFor(role: Role): string {
   return '/siswa';
 }
 
-/** Profil pengguna yang sedang login (null jika belum login). */
-export async function getSessionProfile(): Promise<Profile | null> {
-  const sb = await supabaseServer();
+/**
+ * ID pengguna yang sedang login. Tanda tangan token diperiksa langsung di server (tanpa bertanya ke Supabase),
+ * jadi jauh lebih cepat. Jika cara itu tidak tersedia, otomatis memakai pemeriksaan lama lewat jaringan.
+ */
+export async function idPengguna(sb: SupabaseClient): Promise<string | null> {
+  try {
+    const { data } = await sb.auth.getClaims();
+    const sub = data?.claims?.sub;
+    if (typeof sub === 'string' && sub) return sub;
+  } catch {
+    /* lanjut ke pemeriksaan lewat jaringan */
+  }
   const {
     data: { user },
   } = await sb.auth.getUser();
-  if (!user) return null;
-  const { data } = await supabaseAdmin().from('profiles').select('*').eq('id', user.id).maybeSingle();
+  return user?.id ?? null;
+}
+
+/** Profil pengguna yang sedang login (null jika belum login). */
+export async function getSessionProfile(): Promise<Profile | null> {
+  const id = await idPengguna(await supabaseServer());
+  if (!id) return null;
+  const { data } = await supabaseAdmin().from('profiles').select('*').eq('id', id).maybeSingle();
   return (data as Profile | null) ?? null;
 }
 

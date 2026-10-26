@@ -1,8 +1,15 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 type KodeKegiatan = 'zuhur' | 'wirid';
+
+/* ------------------------------------------------------------------ pengaturan */
+/** Jeda minimal antar pemindaian (milidetik). 0 = tanpa jeda sama sekali. */
+const JEDA_MS = 0;
+/** Kartu yang sama tidak dikirim ulang selama sekian milidetik (supaya kartu yang masih di depan kamera tidak diproses berkali-kali). */
+const ULANG_MS = 6000;
+const BATAS_RIWAYAT = 14;
 
 interface Info {
   kegiatan: KodeKegiatan;
@@ -14,16 +21,17 @@ interface Info {
   pesan: string;
 }
 
-interface Hasil {
-  ok: boolean;
+interface Item {
+  id: number;
+  proses: boolean;
+  ok?: boolean;
   pesan: string;
   nama?: string;
   kelas?: string | null;
   statusLabel?: string;
-  status?: string;
   jam?: string;
   foto?: string;
-  kegiatan?: string;
+  ms?: number;
 }
 
 interface Kamera {
@@ -38,19 +46,21 @@ function nada(ctx: AudioContext, freq: number, mulai: number, durasi: number, ti
   osc.type = tipe;
   osc.frequency.value = freq;
   gain.gain.setValueAtTime(0.0001, ctx.currentTime + mulai);
-  gain.gain.exponentialRampToValueAtTime(vol, ctx.currentTime + mulai + 0.02);
+  gain.gain.exponentialRampToValueAtTime(vol, ctx.currentTime + mulai + 0.01);
   gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + mulai + durasi);
   osc.connect(gain).connect(ctx.destination);
   osc.start(ctx.currentTime + mulai);
   osc.stop(ctx.currentTime + mulai + durasi + 0.05);
 }
+/** Bunyi pendek seketika saat QR terbaca, sebelum server menjawab. */
+const bunyiBaca = (c: AudioContext) => nada(c, 1500, 0, 0.05, 'square', 0.1);
 const bunyiSukses = (c: AudioContext) => {
-  nada(c, 880, 0, 0.12);
-  nada(c, 1320, 0.13, 0.2);
+  nada(c, 988, 0, 0.09);
+  nada(c, 1319, 0.09, 0.15);
 };
 const bunyiGagal = (c: AudioContext) => {
-  nada(c, 220, 0, 0.22, 'square', 0.18);
-  nada(c, 170, 0.25, 0.3, 'square', 0.18);
+  nada(c, 220, 0, 0.2, 'square', 0.18);
+  nada(c, 170, 0.22, 0.28, 'square', 0.18);
 };
 
 const WARNA_STATE: Record<Info['state'], string> = {
@@ -65,17 +75,18 @@ export default function QrScanner() {
   const [tanggal, setTanggal] = useState('');
   const [pilih, setPilih] = useState<KodeKegiatan | ''>('');
   const [jalan, setJalan] = useState(false);
-  const [sibuk, setSibuk] = useState(false);
   const [error, setError] = useState('');
   const [kamera, setKamera] = useState<Kamera[]>([]);
   const [kameraId, setKameraId] = useState('');
-  const [hasil, setHasil] = useState<Hasil | null>(null);
-  const [riwayat, setRiwayat] = useState<Hasil[]>([]);
+  const [daftar, setDaftar] = useState<Item[]>([]);
+  const [berhasil, setBerhasil] = useState(0);
+  const [ditolak, setDitolak] = useState(0);
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const audioRef = useRef<AudioContext | null>(null);
-  const lockRef = useRef(false);
-  const lastRef = useRef<{ t: string; at: number }>({ t: '', at: 0 });
+  const terlihatRef = useRef<Map<string, number>>(new Map());
+  const terimaRef = useRef(0);
+  const urutRef = useRef(0);
   const pilihRef = useRef<KodeKegiatan | ''>('');
   pilihRef.current = pilih;
 
@@ -99,8 +110,8 @@ export default function QrScanner() {
   }, []);
 
   useEffect(() => {
-    muatJadwal();
-    const t = setInterval(muatJadwal, 30_000);
+    void muatJadwal();
+    const t = setInterval(() => void muatJadwal(), 30_000);
     return () => clearInterval(t);
   }, [muatJadwal]);
 
@@ -123,37 +134,52 @@ export default function QrScanner() {
     const ctx = c.getContext('2d');
     if (!ctx) return undefined;
     ctx.drawImage(v, 0, 0, w, h);
-    return c.toDataURL('image/jpeg', 0.6);
+    return c.toDataURL('image/jpeg', 0.55);
   }
 
-  async function proses(teks: string) {
-    if (lockRef.current) return;
-    if (lastRef.current.t === teks && Date.now() - lastRef.current.at < 6000) return;
-    lockRef.current = true;
-    lastRef.current = { t: teks, at: Date.now() };
-    const foto = ambilFoto(); // gambar diambil tepat saat QR terbaca
-    setSibuk(true);
-    let h: Hasil;
+  /** Mengirim satu pemindaian. Tidak ada kunci: banyak kartu bisa dikirim bersamaan tanpa saling menunggu. */
+  async function kirim(id: number, teks: string, foto: string | undefined) {
+    const ctrl = new AbortController();
+    const batas = setTimeout(() => ctrl.abort(), 12000);
+    let hasil: Partial<Item> & { ok: boolean; pesan: string };
     try {
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: teks, kegiatan: pilihRef.current || undefined, foto }),
+        signal: ctrl.signal,
       });
-      const json = (await res.json()) as Hasil;
-      h = { ...json, foto };
+      hasil = (await res.json()) as Partial<Item> & { ok: boolean; pesan: string };
     } catch {
-      h = { ok: false, pesan: 'Tidak bisa terhubung ke server. Periksa internet.', foto };
+      hasil = { ok: false, pesan: 'Tidak bisa terhubung ke server. Periksa internet, lalu pindai ulang kartunya.' };
+      terlihatRef.current.delete(teks); // kegagalan jaringan: kartu boleh langsung dipindai ulang
+    } finally {
+      clearTimeout(batas);
     }
-    setSibuk(false);
-    setHasil(h);
-    setRiwayat((r) => [h, ...r].slice(0, 8));
+    setDaftar((d) => d.map((x) => (x.id === id ? { ...x, ...hasil, proses: false } : x)));
+    if (hasil.ok) setBerhasil((n) => n + 1);
+    else setDitolak((n) => n + 1);
     const ctx = audioRef.current;
-    if (ctx) (h.ok ? bunyiSukses : bunyiGagal)(ctx);
-    // jeda 1 detik sebelum QR berikutnya boleh dipindai
-    setTimeout(() => {
-      lockRef.current = false;
-    }, 1000);
+    if (ctx) (hasil.ok ? bunyiSukses : bunyiGagal)(ctx);
+    if (typeof navigator.vibrate === 'function') navigator.vibrate(hasil.ok ? 40 : [80, 40, 80]);
+  }
+
+  function proses(teks: string) {
+    const t = Date.now();
+    if (JEDA_MS > 0 && t - terimaRef.current < JEDA_MS) return;
+    const lihat = terlihatRef.current;
+    const terakhir = lihat.get(teks);
+    if (terakhir !== undefined && t - terakhir < ULANG_MS) return;
+    lihat.set(teks, t);
+    terimaRef.current = t;
+    if (lihat.size > 300) for (const [k, v] of lihat) if (t - v > ULANG_MS) lihat.delete(k);
+
+    const foto = ambilFoto(); // gambar diambil tepat saat QR terbaca
+    const ctx = audioRef.current;
+    if (ctx) bunyiBaca(ctx); // umpan balik seketika, tanpa menunggu server
+    const id = ++urutRef.current;
+    setDaftar((d) => [{ id, proses: true, pesan: 'Memproses...', foto }, ...d].slice(0, BATAS_RIWAYAT));
+    void kirim(id, teks, foto);
   }
 
   async function mulai(idKamera?: string) {
@@ -165,12 +191,12 @@ export default function QrScanner() {
       }
       await audioRef.current.resume();
 
-      const daftar = await Html5Qrcode.getCameras();
-      if (!daftar.length) {
+      const cams = await Html5Qrcode.getCameras();
+      if (!cams.length) {
         setError('Kamera tidak ditemukan di perangkat ini.');
         return;
       }
-      setKamera(daftar.map((d) => ({ id: d.id, label: d.label || 'Kamera' })));
+      setKamera(cams.map((d) => ({ id: d.id, label: d.label || 'Kamera' })));
 
       if (scannerRef.current) {
         try {
@@ -180,20 +206,24 @@ export default function QrScanner() {
           /* belum berjalan */
         }
       }
-      const qr = new Html5Qrcode('reader');
+      // Hanya mencari QR Code, dan memakai pembaca bawaan peramban bila tersedia (jauh lebih cepat dan hemat baterai)
+      const qr = new Html5Qrcode('reader', {
+        verbose: false,
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      });
       scannerRef.current = qr;
       await qr.start(
         idKamera ? idKamera : { facingMode: 'environment' },
         {
-          fps: 10,
+          fps: 15,
+          disableFlip: true,
           qrbox: (w, h) => {
-            const s = Math.floor(Math.min(w, h) * 0.7);
+            const s = Math.floor(Math.min(w, h) * 0.75);
             return { width: s, height: s };
           },
         },
-        (teks) => {
-          void proses(teks);
-        },
+        (teks) => proses(teks),
         () => undefined,
       );
       setJalan(true);
@@ -224,6 +254,8 @@ export default function QrScanner() {
   }
 
   const aktifInfo = info.find((i) => i.kegiatan === pilih);
+  const terbaru = daftar[0];
+  const sedangProses = daftar.filter((d) => d.proses).length;
 
   return (
     <div className="space-y-4">
@@ -240,18 +272,12 @@ export default function QrScanner() {
           <>
             <div className="flex flex-wrap gap-2">
               {info.map((i) => (
-                <button
-                  key={i.kegiatan}
-                  onClick={() => setPilih(i.kegiatan)}
-                  className={pilih === i.kegiatan ? 'btn-primary' : 'btn-outline'}
-                >
+                <button key={i.kegiatan} onClick={() => setPilih(i.kegiatan)} className={pilih === i.kegiatan ? 'btn-primary' : 'btn-outline'}>
                   {i.label}
                 </button>
               ))}
             </div>
-            {aktifInfo && (
-              <p className={`mt-3 rounded-lg border px-4 py-3 text-sm ${WARNA_STATE[aktifInfo.state]}`}>{aktifInfo.pesan}</p>
-            )}
+            {aktifInfo && <p className={`mt-3 rounded-lg border px-4 py-3 text-sm ${WARNA_STATE[aktifInfo.state]}`}>{aktifInfo.pesan}</p>}
           </>
         )}
       </div>
@@ -261,9 +287,9 @@ export default function QrScanner() {
         {!jalan && (
           <div className="py-6 text-center">
             <p className="mb-4 text-sm text-slate-600">
-              Tekan tombol di bawah, izinkan kamera, lalu arahkan kamera ke QR Code siswa. Foto siswa akan tertangkap otomatis saat QR terbaca.
+              Tekan tombol di bawah, izinkan kamera, lalu arahkan kamera ke QR Code siswa. Pemindaian berjalan terus tanpa jeda, jadi kartu berikutnya bisa langsung ditunjukkan.
             </p>
-            <button className="btn-primary" onClick={() => mulai(kameraId || undefined)}>
+            <button className="btn-primary" onClick={() => void mulai(kameraId || undefined)}>
               Mulai Scanner
             </button>
           </div>
@@ -288,42 +314,48 @@ export default function QrScanner() {
                 ))}
               </select>
             )}
-            <button className="btn-outline" onClick={berhenti}>
+            <button className="btn-outline" onClick={() => void berhenti()}>
               Hentikan
             </button>
-            {sibuk && <span className="text-sm text-slate-500">Memproses...</span>}
+            <span className="ml-auto flex items-center gap-3 text-sm">
+              <span className="badge bg-emerald-100 text-emerald-800">Berhasil {berhasil}</span>
+              {ditolak > 0 && <span className="badge bg-red-100 text-red-800">Ditolak {ditolak}</span>}
+              {sedangProses > 0 && <span className="text-slate-500">{sedangProses} diproses</span>}
+            </span>
           </div>
         )}
       </div>
 
-      {hasil && (
-        <div className={`card flex items-center gap-4 border-2 ${hasil.ok ? 'border-emerald-400' : 'border-red-400'}`}>
-          {hasil.foto && (
+      {terbaru && (
+        <div
+          className={`card flex items-center gap-4 border-2 ${terbaru.proses ? 'border-slate-300' : terbaru.ok ? 'border-emerald-400' : 'border-red-400'}`}
+        >
+          {terbaru.foto && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={hasil.foto} alt="Foto saat scan" className="h-24 w-24 shrink-0 rounded-xl object-cover" />
+            <img src={terbaru.foto} alt="Foto saat scan" className="h-24 w-24 shrink-0 rounded-xl object-cover" />
           )}
           <div className="min-w-0">
-            <div className={`text-sm font-bold ${hasil.ok ? 'text-emerald-700' : 'text-red-700'}`}>
-              {hasil.ok ? 'BERHASIL' : 'DITOLAK'}
+            <div className={`text-sm font-bold ${terbaru.proses ? 'text-slate-500' : terbaru.ok ? 'text-emerald-700' : 'text-red-700'}`}>
+              {terbaru.proses ? 'MEMPROSES...' : terbaru.ok ? 'BERHASIL' : 'DITOLAK'}
             </div>
-            {hasil.nama && <div className="truncate text-lg font-bold">{hasil.nama}</div>}
-            {hasil.kelas && <div className="text-sm text-slate-600">{hasil.kelas}</div>}
+            {terbaru.nama && <div className="truncate text-lg font-bold">{terbaru.nama}</div>}
+            {terbaru.kelas && <div className="text-sm text-slate-600">{terbaru.kelas}</div>}
             <div className="text-sm">
-              {hasil.ok ? `${hasil.pesan} • ${hasil.statusLabel} • ${hasil.jam} WIB` : hasil.pesan}
+              {terbaru.proses ? 'Menunggu konfirmasi server' : terbaru.ok ? `${terbaru.pesan} • ${terbaru.statusLabel} • ${terbaru.jam} WIB` : terbaru.pesan}
             </div>
           </div>
         </div>
       )}
 
-      {riwayat.length > 0 && (
+      {daftar.length > 1 && (
         <div className="card">
           <h3 className="mb-2 text-sm font-bold">Pemindaian terakhir</h3>
           <ul className="divide-y divide-slate-100 text-sm">
-            {riwayat.map((r, i) => (
-              <li key={i} className="flex items-center justify-between gap-3 py-2">
-                <span className="truncate">{r.nama ?? 'QR tidak dikenali'}</span>
-                <span className={`badge ${r.ok ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
-                  {r.ok ? r.statusLabel : 'Ditolak'}
+            {daftar.slice(1).map((r) => (
+              <li key={r.id} className="flex items-center justify-between gap-3 py-2">
+                <span className="truncate">{r.nama ?? (r.proses ? 'Memproses...' : r.pesan)}</span>
+                <span className={`badge shrink-0 ${r.proses ? 'bg-slate-100 text-slate-600' : r.ok ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
+                  {r.proses ? '...' : r.ok ? r.statusLabel : 'Ditolak'}
                 </span>
               </li>
             ))}
