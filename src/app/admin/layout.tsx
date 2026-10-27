@@ -26,7 +26,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     /* angka akan terisi pada pembaruan berikutnya */
   }
   return (
-    <Shell navNode={<AdminNav items={MENU} awal={awal} />} nama={p.nama} peran="Admin" home="/admin" lebar="max-w-6xl">
+    <Shell navNode={<AdminNav items={MENU} awal={awal} pengguna={p.id} />} nama={p.nama} peran="Admin" home="/admin" lebar="max-w-6xl">
       {children}
     </Shell>
   );

@@ -1,9 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { Lencana } from '@/lib/lencana';
+import { bacaDilihat, jumlahBaru, rapikanDilihat, simpanDilihat, tandaiDilihat, type Dilihat } from '@/lib/lencana-dilihat';
 
 const POLL_MS = 8000;
 
@@ -14,9 +15,9 @@ export interface ItemMenu {
 }
 
 const KETERANGAN: Record<keyof Lencana, string> = {
-  akun: 'akun menunggu persetujuan',
-  izin: 'pengajuan izin menunggu',
-  alfa: 'siswa alfa hari ini',
+  akun: 'akun baru menunggu persetujuan',
+  izin: 'pengajuan izin baru',
+  alfa: 'siswa alfa hari ini (baru)',
   wirid: 'jadwal wirid bulan ini belum diisi',
 };
 
@@ -41,6 +42,7 @@ function Penanda({ kunci, nilai, berdenyut }: { kunci: keyof Lencana; nilai: num
   const teks = kunci === 'wirid' ? '!' : nilai > 99 ? '99+' : String(nilai);
   return (
     <span
+      data-penanda={kunci}
       aria-label={`${kunci === 'wirid' ? '' : nilai + ' '}${KETERANGAN[kunci]}`}
       className={`ml-1.5 inline-grid h-5 min-w-5 place-items-center rounded-full bg-red-600 px-1 text-[11px] font-bold leading-none text-white ${
         berdenyut ? 'animate-bounce' : ''
@@ -66,14 +68,73 @@ function PemicuUlang({ onUbah }: { onUbah: () => void }) {
   return null;
 }
 
-export default function AdminNav({ items, awal }: { items: ItemMenu[]; awal: Lencana }) {
+export default function AdminNav({
+  items,
+  awal,
+  pengguna = 'admin',
+  intervalMs = POLL_MS,
+}: {
+  items: ItemMenu[];
+  awal: Lencana;
+  pengguna?: string;
+  intervalMs?: number;
+}) {
   const pathname = usePathname();
+  const router = useRouter();
+  const kunciSimpan = `az-dilihat-${pengguna}`;
+
   const [data, setData] = useState<Lencana>(awal);
+  const [dilihat, setDilihat] = useState<Dilihat>({});
+  const [siap, setSiap] = useState(false); // penanda baru ditampilkan setelah catatan "sudah dilihat" terbaca
   const [berdenyut, setBerdenyut] = useState<Partial<Record<keyof Lencana, boolean>>>({});
+
+  const dataRef = useRef<Lencana>(awal);
+  const dilihatRef = useRef<Dilihat>({});
   const sebelumnya = useRef<Lencana>(awal);
   const sedang = useRef(false);
   const audio = useRef<AudioContext | null>(null);
-  const judulDasar = useRef('');
+
+  const terapkan = useCallback(
+    (baru: Dilihat) => {
+      dilihatRef.current = baru;
+      setDilihat(baru);
+      simpanDilihat(window.localStorage, kunciSimpan, baru);
+    },
+    [kunciSimpan],
+  );
+
+  /** Menu dibuka atau diklik: jumlah saat ini dianggap sudah dilihat, penanda hilang. */
+  const tandai = useCallback(
+    (kunci: keyof Lencana) => terapkan(tandaiDilihat(dilihatRef.current, kunci, dataRef.current)),
+    [terapkan],
+  );
+
+  // Baca catatan "sudah dilihat" dari penyimpanan peramban
+  useEffect(() => {
+    const awalDilihat = rapikanDilihat(bacaDilihat(window.localStorage, kunciSimpan), dataRef.current);
+    dilihatRef.current = awalDilihat;
+    setDilihat(awalDilihat);
+    setSiap(true);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== kunciSimpan) return;
+      const dari = rapikanDilihat(bacaDilihat(window.localStorage, kunciSimpan), dataRef.current);
+      dilihatRef.current = dari;
+      setDilihat(dari);
+    };
+    window.addEventListener('storage', onStorage); // tab lain menandai dilihat: ikut hilang di sini
+    return () => window.removeEventListener('storage', onStorage);
+  }, [kunciSimpan]);
+
+  // Membuka halaman sebuah menu (lewat klik, alamat, atau tombol kembali) juga menandainya sudah dilihat
+  useEffect(() => {
+    if (!siap) return;
+    for (const n of items) {
+      if (!n.lencana) continue;
+      const aktifSekarang = n.href === '/admin' ? pathname === '/admin' : pathname === n.href || pathname.startsWith(n.href + '/');
+      if (aktifSekarang) tandai(n.lencana);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname, siap]);
 
   // Aktifkan suara setelah interaksi pertama (aturan peramban)
   useEffect(() => {
@@ -121,6 +182,10 @@ export default function AdminNav({ items, awal }: { items: ItemMenu[]; awal: Len
         }
       }
       sebelumnya.current = baru;
+      dataRef.current = baru;
+      // jumlah turun (akun disetujui, dll): catatan "sudah dilihat" ikut diturunkan
+      const rapi = rapikanDilihat(dilihatRef.current, baru);
+      if (rapi !== dilihatRef.current) terapkan(rapi);
       setData((d) => (d.akun === baru.akun && d.izin === baru.izin && d.alfa === baru.alfa && d.wirid === baru.wirid ? d : baru));
     } catch {
       /* coba lagi pada putaran berikutnya */
@@ -128,14 +193,14 @@ export default function AdminNav({ items, awal }: { items: ItemMenu[]; awal: Len
       clearTimeout(batas);
       sedang.current = false;
     }
-  }, []);
+  }, [terapkan]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
     const mulai = (langsung: boolean) => {
       if (timer) clearInterval(timer);
       if (langsung) void muat();
-      timer = setInterval(() => void muat(), POLL_MS);
+      timer = setInterval(() => void muat(), intervalMs);
     };
     const berhenti = () => {
       if (timer) clearInterval(timer);
@@ -148,20 +213,21 @@ export default function AdminNav({ items, awal }: { items: ItemMenu[]; awal: Len
       berhenti();
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [muat]);
+  }, [muat, intervalMs]);
 
-  // Angka juga muncul di judul tab, misalnya "(3) Absensi Zuhur dan Wirid", supaya terlihat walau tab sedang di belakang
+  const tampil = (k: keyof Lencana) => (siap ? jumlahBaru(k, data, dilihat) : 0);
+
+  // Angka yang BELUM dilihat juga muncul di judul tab, misalnya "(3) Absensi Zuhur dan Wirid"
+  const totalJudul = tampil('akun') + tampil('izin');
   useEffect(() => {
-    const total = data.akun + data.izin;
     const pasang = () => {
-      const bersih = document.title.replace(/^\(\d+\)\s/, '');
-      judulDasar.current = bersih;
-      document.title = total > 0 ? `(${total > 99 ? '99+' : total}) ${bersih}` : bersih;
+      const bersih = document.title.replace(/^\(\d+\+?\)\s/, '');
+      document.title = totalJudul > 0 ? `(${totalJudul > 99 ? '99+' : totalJudul}) ${bersih}` : bersih;
     };
     pasang();
     const t = setTimeout(pasang, 150); // setelah Next selesai mengganti judul saat pindah halaman
     return () => clearTimeout(t);
-  }, [data.akun, data.izin, pathname]);
+  }, [totalJudul, pathname]);
 
   const aktif = (href: string) => (href === '/admin' ? pathname === '/admin' : pathname === href || pathname.startsWith(href + '/'));
 
@@ -174,12 +240,16 @@ export default function AdminNav({ items, awal }: { items: ItemMenu[]; awal: Len
         <Link
           key={n.href}
           href={n.href}
+          onClick={() => {
+            if (n.lencana) tandai(n.lencana);
+            if (aktif(n.href)) router.refresh(); // sudah di halaman ini: muat ulang datanya supaya yang baru ikut tampil
+          }}
           className={`flex items-center whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium hover:bg-brand-50 hover:text-brand-800 ${
             aktif(n.href) ? 'bg-brand-50 text-brand-800' : 'text-slate-600'
           }`}
         >
           {n.label}
-          {n.lencana && <Penanda kunci={n.lencana} nilai={data[n.lencana]} berdenyut={!!berdenyut[n.lencana]} />}
+          {n.lencana && <Penanda kunci={n.lencana} nilai={tampil(n.lencana)} berdenyut={!!berdenyut[n.lencana]} />}
         </Link>
       ))}
     </nav>
