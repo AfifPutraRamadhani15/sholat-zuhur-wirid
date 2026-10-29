@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { verifikasiToken } from './qr';
-import { jendelaKegiatan, kegiatanPadaTanggal, nowWIB, pesanState, stateJendela, toMenit } from './jadwal';
+import { jendelaKegiatan, kegiatanPadaTanggal, nowWIB, pesanState, stateJendela } from './jadwal';
 import { kirimNotif } from './chatbot';
 import { kirimKonfirmasiPush } from './push';
 import { audit } from './audit';
@@ -29,15 +29,6 @@ export interface DepsScan {
 const DEPS: DepsScan = { audit, kirimPush: kirimKonfirmasiPush, kirimNotif };
 
 const gagal = (pesan: string): HasilScan => ({ status: 200, body: { ok: false, pesan } });
-
-/** Hadir tepat waktu 10 + bonus 0-5 (makin cepat setelah jam buka, makin besar). Terlambat 5. */
-function hitungPoinScan(status: StatusAbsen, menitDariBuka: number, lebarTepat: number): number {
-  if (status === 'hadir') {
-    const sisa = Math.min(1, Math.max(0, 1 - menitDariBuka / Math.max(lebarTepat, 1)));
-    return 10 + Math.round(5 * sisa);
-  }
-  return status === 'terlambat' ? 5 : 0;
-}
 
 export function dekodeFoto(foto?: string): Buffer | null {
   if (!foto) return null;
@@ -91,10 +82,6 @@ export async function prosesScan(
   if (state === 'belum_dibuka' || state === 'ditutup') return gagal(pesanState(j, state));
   const status: StatusAbsen = state === 'hadir' ? 'hadir' : 'terlambat';
 
-  // poin: makin cepat scan setelah jam buka, makin besar bonusnya
-  const menitScan = Math.floor(now.detik / 60);
-  const poin = hitungPoinScan(status, menitScan - toMenit(j.buka), toMenit(j.tepat) - toMenit(j.buka));
-
   const fotoBuf = dekodeFoto(input.foto);
   if (!fotoBuf && v.tipe === 'c') return gagal('Foto bukti gagal diambil. Pastikan kamera aktif, lalu pindai ulang.');
 
@@ -105,7 +92,6 @@ export async function prosesScan(
       kegiatan,
       tanggal: now.tanggal,
       status,
-      poin,
       scanned_at: mulai.toISOString(),
       metode: v.tipe === 'c' ? 'kartu' : 'qr_layar',
       foto_path: null,
@@ -131,8 +117,7 @@ export async function prosesScan(
   const jam = now.jam;
   const isi =
     `Absen ${LABEL_KEGIATAN[kegiatan]} kamu tercatat pukul ${jam} WIB dengan status ${LABEL_STATUS[status]}.` +
-    (status === 'terlambat' ? ' Besok usahakan datang lebih awal ya.' : ' Terima kasih sudah hadir tepat waktu.') +
-    ` Kamu dapat +${poin} poin.`;
+    (status === 'terlambat' ? ' Besok usahakan datang lebih awal ya.' : ' Terima kasih sudah hadir tepat waktu.');
 
   const lanjut = async () => {
     const foto = async () => {
@@ -148,7 +133,7 @@ export async function prosesScan(
     };
     const push = () => deps.kirimPush(sb, { siswaId: siswa.id, kegiatan, tanggal: now.tanggal, jam, status });
     const catat = () =>
-      deps.audit(scanner.id, 'scan', `absensi:${baris.id}`, { siswa: siswa.nama, kegiatan, status, poin, metode: v.tipe === 'c' ? 'kartu' : 'qr_layar' });
+      deps.audit(scanner.id, 'scan', `absensi:${baris.id}`, { siswa: siswa.nama, kegiatan, status, metode: v.tipe === 'c' ? 'kartu' : 'qr_layar' });
     // semuanya berjalan bersamaan; kegagalan satu bagian tidak mengganggu yang lain
     await Promise.allSettled([foto(), notifChat(), push(), catat()]);
   };
@@ -164,7 +149,6 @@ export async function prosesScan(
       statusLabel: LABEL_STATUS[status],
       kegiatan,
       jam,
-      poin,
     },
     lanjut,
   };

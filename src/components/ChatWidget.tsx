@@ -31,6 +31,8 @@ export default function ChatWidget({ userId }: { userId: string }) {
       if (!baru.length) return prev;
       if (dariBaru) {
         const bot = baru.filter((m) => m.role === 'bot');
+        // Beranda siswa ikut diperbarui seketika saat notifikasi absen masuk
+        if (bot.some((m) => m.tipe === 'notifikasi')) window.dispatchEvent(new CustomEvent('absensi-baru'));
         if (bot.length && !bukaRef.current) {
           setBelumDibaca((n) => n + bot.length);
           const notif = bot.find((m) => m.tipe === 'notifikasi');

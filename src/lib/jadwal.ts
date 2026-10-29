@@ -184,8 +184,8 @@ export interface HariKegiatan {
   selesai: boolean; // sudah lewat jam tutup, jadi siswa tanpa catatan dihitung Alfa
 }
 
-export async function daftarKegiatan(sb: SupabaseClient, dari: string, sampai: string): Promise<HariKegiatan[]> {
-  const now = nowWIB();
+export async function daftarKegiatan(sb: SupabaseClient, dari: string, sampai: string, sekarang: Date = new Date()): Promise<HariKegiatan[]> {
+  const now = nowWIB(sekarang);
   const z = await ambilPengaturanZuhur(sb);
   const { data: wirid } = await sb
     .from('jadwal_wirid')
