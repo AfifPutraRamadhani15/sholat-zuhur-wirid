@@ -5,7 +5,6 @@ import { kirimNotif } from './chatbot';
 import { kirimKonfirmasiPush } from './push';
 import { audit } from './audit';
 import { satu } from './util';
-import { hitungPoin } from './poin';
 import { LABEL_KEGIATAN, LABEL_STATUS, type Kegiatan, type StatusAbsen } from './types';
 
 export interface InputScan {
@@ -30,6 +29,15 @@ export interface DepsScan {
 const DEPS: DepsScan = { audit, kirimPush: kirimKonfirmasiPush, kirimNotif };
 
 const gagal = (pesan: string): HasilScan => ({ status: 200, body: { ok: false, pesan } });
+
+/** Hadir tepat waktu 10 + bonus 0-5 (makin cepat setelah jam buka, makin besar). Terlambat 5. */
+function hitungPoinScan(status: StatusAbsen, menitDariBuka: number, lebarTepat: number): number {
+  if (status === 'hadir') {
+    const sisa = Math.min(1, Math.max(0, 1 - menitDariBuka / Math.max(lebarTepat, 1)));
+    return 10 + Math.round(5 * sisa);
+  }
+  return status === 'terlambat' ? 5 : 0;
+}
 
 export function dekodeFoto(foto?: string): Buffer | null {
   if (!foto) return null;
@@ -85,7 +93,7 @@ export async function prosesScan(
 
   // poin: makin cepat scan setelah jam buka, makin besar bonusnya
   const menitScan = Math.floor(now.detik / 60);
-  const poin = hitungPoin(status, menitScan - toMenit(j.buka), toMenit(j.tepat) - toMenit(j.buka));
+  const poin = hitungPoinScan(status, menitScan - toMenit(j.buka), toMenit(j.tepat) - toMenit(j.buka));
 
   const fotoBuf = dekodeFoto(input.foto);
   if (!fotoBuf && v.tipe === 'c') return gagal('Foto bukti gagal diambil. Pastikan kamera aktif, lalu pindai ulang.');
